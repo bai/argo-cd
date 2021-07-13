@@ -3,8 +3,8 @@ package util
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/argoproj/argo-cd/common"
-	appsv1 "github.com/argoproj/argo-cd/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v2/common"
+	appsv1 "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 )
 
 type RepoOptions struct {
@@ -21,6 +21,7 @@ type RepoOptions struct {
 	GithubAppInstallationId        int64
 	GithubAppPrivateKeyPath        string
 	GitHubAppEnterpriseBaseURL     string
+	Proxy                          string
 }
 
 func AddRepoFlags(command *cobra.Command, opts *RepoOptions) {
@@ -39,4 +40,5 @@ func AddRepoFlags(command *cobra.Command, opts *RepoOptions) {
 	command.Flags().Int64Var(&opts.GithubAppInstallationId, "github-app-installation-id", 0, "installation id of the GitHub Application")
 	command.Flags().StringVar(&opts.GithubAppPrivateKeyPath, "github-app-private-key-path", "", "private key of the GitHub Application")
 	command.Flags().StringVar(&opts.GitHubAppEnterpriseBaseURL, "github-app-enterprise-base-url", "", "base url to use when using GitHub Enterprise (e.g. https://ghe.example.com/api/v3")
+	command.Flags().StringVar(&opts.Proxy, "proxy", "", "use proxy to access repository")
 }

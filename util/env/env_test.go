@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	util "github.com/argoproj/argo-cd/util/io"
+	util "github.com/argoproj/argo-cd/v2/util/io"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -102,4 +102,21 @@ func TestParseDurationFromEnv(t *testing.T) {
 			assert.Equal(t, tc.expected, val)
 		})
 	}
+}
+
+func Test_ParseBoolFromEnv(t *testing.T) {
+	t.Run("Get 'true' value from existing env var", func(t *testing.T) {
+		_ = os.Setenv("TEST_BOOL_VAL", "true")
+		defer os.Setenv("TEST_BOOL_VAL", "")
+		assert.True(t, ParseBoolFromEnv("TEST_BOOL_VAL", false))
+	})
+	t.Run("Get 'false' value from existing env var", func(t *testing.T) {
+		_ = os.Setenv("TEST_BOOL_VAL", "false")
+		defer os.Setenv("TEST_BOOL_VAL", "")
+		assert.False(t, ParseBoolFromEnv("TEST_BOOL_VAL", true))
+	})
+	t.Run("Get default value from non-existing env var", func(t *testing.T) {
+		_ = os.Setenv("TEST_BOOL_VAL", "")
+		assert.True(t, ParseBoolFromEnv("TEST_BOOL_VAL", true))
+	})
 }

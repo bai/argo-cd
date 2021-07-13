@@ -19,6 +19,9 @@ import (
 	"github.com/coreos/go-oidc"
 	"github.com/dgrijalva/jwt-go/v4"
 	"github.com/golang/protobuf/ptypes/empty"
+	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
+	grpc_retry "github.com/grpc-ecosystem/go-grpc-middleware/retry"
+	retryablehttp "github.com/hashicorp/go-retryablehttp"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/oauth2"
 	"google.golang.org/grpc"
@@ -26,28 +29,29 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/argoproj/argo-cd/common"
-	accountpkg "github.com/argoproj/argo-cd/pkg/apiclient/account"
-	applicationpkg "github.com/argoproj/argo-cd/pkg/apiclient/application"
-	certificatepkg "github.com/argoproj/argo-cd/pkg/apiclient/certificate"
-	clusterpkg "github.com/argoproj/argo-cd/pkg/apiclient/cluster"
-	gpgkeypkg "github.com/argoproj/argo-cd/pkg/apiclient/gpgkey"
-	projectpkg "github.com/argoproj/argo-cd/pkg/apiclient/project"
-	repocredspkg "github.com/argoproj/argo-cd/pkg/apiclient/repocreds"
-	repositorypkg "github.com/argoproj/argo-cd/pkg/apiclient/repository"
-	sessionpkg "github.com/argoproj/argo-cd/pkg/apiclient/session"
-	settingspkg "github.com/argoproj/argo-cd/pkg/apiclient/settings"
-	versionpkg "github.com/argoproj/argo-cd/pkg/apiclient/version"
-	"github.com/argoproj/argo-cd/pkg/apis/application/v1alpha1"
-	argoappv1 "github.com/argoproj/argo-cd/pkg/apis/application/v1alpha1"
-	"github.com/argoproj/argo-cd/util/env"
-	grpc_util "github.com/argoproj/argo-cd/util/grpc"
-	argoio "github.com/argoproj/argo-cd/util/io"
-	"github.com/argoproj/argo-cd/util/kube"
-	"github.com/argoproj/argo-cd/util/localconfig"
-	oidcutil "github.com/argoproj/argo-cd/util/oidc"
-	tls_util "github.com/argoproj/argo-cd/util/tls"
+	"github.com/argoproj/argo-cd/v2/common"
+	accountpkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/account"
+	applicationpkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/application"
+	certificatepkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/certificate"
+	clusterpkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/cluster"
+	gpgkeypkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/gpgkey"
+	projectpkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/project"
+	repocredspkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/repocreds"
+	repositorypkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/repository"
+	sessionpkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/session"
+	settingspkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/settings"
+	versionpkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/version"
+	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	argoappv1 "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v2/util/env"
+	grpc_util "github.com/argoproj/argo-cd/v2/util/grpc"
+	argoio "github.com/argoproj/argo-cd/v2/util/io"
+	"github.com/argoproj/argo-cd/v2/util/kube"
+	"github.com/argoproj/argo-cd/v2/util/localconfig"
+	oidcutil "github.com/argoproj/argo-cd/v2/util/oidc"
+	tls_util "github.com/argoproj/argo-cd/v2/util/tls"
 )
 
 const (
@@ -112,6 +116,8 @@ type ClientOptions struct {
 	PortForward          bool
 	PortForwardNamespace string
 	Headers              []string
+	HttpRetryMax         int
+	KubeOverrides        *clientcmd.ConfigOverrides
 }
 
 type client struct {
@@ -131,6 +137,7 @@ type client struct {
 	proxyListener   net.Listener
 	proxyServer     *grpc.Server
 	proxyUsersCount int
+	httpClient      *http.Client
 }
 
 // NewClient creates a new API client from a set of config options.
@@ -191,7 +198,10 @@ func NewClient(opts *ClientOptions) (Client, error) {
 		c.ServerAddr = serverFromEnv
 	}
 	if opts.PortForward || opts.PortForwardNamespace != "" {
-		port, err := kube.PortForward("app.kubernetes.io/name=argocd-server", 8080, opts.PortForwardNamespace)
+		if opts.KubeOverrides == nil {
+			opts.KubeOverrides = &clientcmd.ConfigOverrides{}
+		}
+		port, err := kube.PortForward("app.kubernetes.io/name=argocd-server", 8080, opts.PortForwardNamespace, opts.KubeOverrides)
 		if err != nil {
 			return nil, err
 		}
@@ -246,6 +256,24 @@ func NewClient(opts *ClientOptions) (Client, error) {
 	}
 	if opts.GRPCWebRootPath != "" {
 		c.GRPCWebRootPath = opts.GRPCWebRootPath
+	}
+
+	if opts.HttpRetryMax > 0 {
+		retryClient := retryablehttp.NewClient()
+		retryClient.RetryMax = opts.HttpRetryMax
+		c.httpClient = retryClient.StandardClient()
+	} else {
+		c.httpClient = &http.Client{}
+	}
+
+	if !c.PlainText {
+		tlsConfig, err := c.tlsConfig()
+		if err != nil {
+			return nil, err
+		}
+		c.httpClient.Transport = &http.Transport{
+			TLSClientConfig: tlsConfig,
+		}
 	}
 	if !c.GRPCWeb {
 		//test if we need to set it to true
@@ -466,9 +494,15 @@ func (c *client) newConn() (*grpc.ClientConn, io.Closer, error) {
 	endpointCredentials := jwtCredentials{
 		Token: c.AuthToken,
 	}
+	retryOpts := []grpc_retry.CallOption{
+		grpc_retry.WithMax(3),
+		grpc_retry.WithBackoff(grpc_retry.BackoffLinear(1000 * time.Millisecond)),
+	}
 	var dialOpts []grpc.DialOption
 	dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(endpointCredentials))
 	dialOpts = append(dialOpts, grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(MaxGRPCMessageSize), grpc.MaxCallSendMsgSize(MaxGRPCMessageSize)))
+	dialOpts = append(dialOpts, grpc.WithStreamInterceptor(grpc_retry.StreamClientInterceptor(retryOpts...)))
+	dialOpts = append(dialOpts, grpc.WithUnaryInterceptor(grpc_middleware.ChainUnaryClient(grpc_retry.UnaryClientInterceptor(retryOpts...))))
 
 	ctx := context.Background()
 

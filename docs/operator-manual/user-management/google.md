@@ -26,7 +26,7 @@ data:
 
     ![Google Admin Add Custom SAML App](../../assets/google-admin-saml-add-app-menu.png "Add apps menu with add custom SAML app highlighted")
 
-3. Enter a `Name` for the application (eg. `Argo CD`), then choose `Continue`
+3. Enter a `Name` for the application (e.g. `Argo CD`), then choose `Continue`
 
     ![Google Admin Apps Menu](../../assets/google-admin-saml-app-details.png "Add apps menu with add custom SAML app highlighted")
 
@@ -34,6 +34,7 @@ data:
     - Base64 encode the contents of the certificate file, for example:
     - `$ cat ArgoCD.cer | base64`
     - *Keep a copy of the encoded output to be used in the next section.*
+    - *Ensure that the certificate is in PEM format before base64 encoding*
 
     ![Google Admin IdP Metadata](../../assets/google-admin-idp-metadata.png "A screenshot of the Google IdP metadata")
 
@@ -43,7 +44,7 @@ data:
 
 6. Add SAML Attribute Mapping, Map `Primary email` to `name` and `Primary Email` to `email`. and click `ADD MAPPING` button.
 
-    ![Google Admin SAML Attribute Mapping Details](../../assets/google-admin-saml-attribute-mapping-details.png "A screenshot of the Google Admin SAML Attribut Mapping Details")
+    ![Google Admin SAML Attribute Mapping Details](../../assets/google-admin-saml-attribute-mapping-details.png "A screenshot of the Google Admin SAML Attribute Mapping Details")
 
 7. Finish creating the application.
 
@@ -60,7 +61,7 @@ data:
       id: saml
       name: saml
       config:
-        ssoURL: https://sso-url (eg. https://accounts.google.com/o/saml2/idp?idpid=Abcde0)
+        ssoURL: https://sso-url (e.g. https://accounts.google.com/o/saml2/idp?idpid=Abcde0)
         entityIssuer: https://argocd.example.com/api/dex/callback
         caData: |
           BASE64-ENCODED-CERTIFICATE-DATA

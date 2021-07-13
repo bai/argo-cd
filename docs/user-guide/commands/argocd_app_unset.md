@@ -28,6 +28,7 @@ argocd app unset APPNAME parameters [flags]
       --nameprefix                    Kustomize nameprefix
       --namesuffix                    Kustomize namesuffix
   -p, --parameter stringArray         Unset a parameter override (e.g. -p guestbook=image)
+      --plugin-env stringArray        Unset plugin env variables (e.g --plugin-env name)
       --values stringArray            Unset one or more Helm values files
       --values-literal                Unset literal Helm values block
 ```
@@ -42,6 +43,7 @@ argocd app unset APPNAME parameters [flags]
       --grpc-web                        Enables gRPC-web protocol. Useful if Argo CD server is behind proxy which does not support HTTP2.
       --grpc-web-root-path string       Enables gRPC-web protocol. Useful if Argo CD server is behind proxy which does not support HTTP2. Set web root.
   -H, --header strings                  Sets additional header to all requests made by Argo CD CLI. (Can be repeated multiple times to add multiple headers, also supports comma separated headers)
+      --http-retry-max int              Maximum number of retries to establish http connection to Argo CD server
       --insecure                        Skip server certificate and domain verification
       --logformat string                Set the logging format. One of: text|json (default "text")
       --loglevel string                 Set the logging level. One of: debug|info|warn|error (default "info")

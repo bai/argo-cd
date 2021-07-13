@@ -35,29 +35,33 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/utils/pointer"
 
-	argocommon "github.com/argoproj/argo-cd/common"
-	"github.com/argoproj/argo-cd/pkg/apiclient/application"
-	"github.com/argoproj/argo-cd/pkg/apis/application/v1alpha1"
-	appv1 "github.com/argoproj/argo-cd/pkg/apis/application/v1alpha1"
-	appclientset "github.com/argoproj/argo-cd/pkg/client/clientset/versioned"
-	applisters "github.com/argoproj/argo-cd/pkg/client/listers/application/v1alpha1"
-	"github.com/argoproj/argo-cd/reposerver/apiclient"
-	servercache "github.com/argoproj/argo-cd/server/cache"
-	"github.com/argoproj/argo-cd/server/rbacpolicy"
-	"github.com/argoproj/argo-cd/util/argo"
-	argoutil "github.com/argoproj/argo-cd/util/argo"
-	"github.com/argoproj/argo-cd/util/db"
-	"github.com/argoproj/argo-cd/util/env"
-	"github.com/argoproj/argo-cd/util/git"
-	"github.com/argoproj/argo-cd/util/helm"
-	ioutil "github.com/argoproj/argo-cd/util/io"
-	"github.com/argoproj/argo-cd/util/lua"
-	"github.com/argoproj/argo-cd/util/rbac"
-	"github.com/argoproj/argo-cd/util/session"
-	"github.com/argoproj/argo-cd/util/settings"
+	argocommon "github.com/argoproj/argo-cd/v2/common"
+	"github.com/argoproj/argo-cd/v2/pkg/apiclient/application"
+	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	appv1 "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	appclientset "github.com/argoproj/argo-cd/v2/pkg/client/clientset/versioned"
+	applisters "github.com/argoproj/argo-cd/v2/pkg/client/listers/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v2/reposerver/apiclient"
+	servercache "github.com/argoproj/argo-cd/v2/server/cache"
+	"github.com/argoproj/argo-cd/v2/server/rbacpolicy"
+	"github.com/argoproj/argo-cd/v2/util/argo"
+	argoutil "github.com/argoproj/argo-cd/v2/util/argo"
+	"github.com/argoproj/argo-cd/v2/util/db"
+	"github.com/argoproj/argo-cd/v2/util/env"
+	"github.com/argoproj/argo-cd/v2/util/git"
+	"github.com/argoproj/argo-cd/v2/util/helm"
+	ioutil "github.com/argoproj/argo-cd/v2/util/io"
+	"github.com/argoproj/argo-cd/v2/util/lua"
+	"github.com/argoproj/argo-cd/v2/util/rbac"
+	"github.com/argoproj/argo-cd/v2/util/session"
+	"github.com/argoproj/argo-cd/v2/util/settings"
 )
 
-const maxPodLogsToRender = 10
+const (
+	maxPodLogsToRender                 = 10
+	backgroundPropagationPolicy string = "background"
+	foregroundPropagationPolicy string = "foreground"
+)
 
 var (
 	watchAPIBufferSize = env.ParseNumFromEnv(argocommon.EnvWatchAPIBufferSize, 1000, 0, math.MaxInt32)
@@ -146,10 +150,18 @@ func (s *Server) List(ctx context.Context, q *application.ApplicationQuery) (*ap
 			return nil, err
 		}
 	}
+
+	// Filter applications by name
 	newItems = argoutil.FilterByProjects(newItems, q.Projects)
+
+	// Filter applications by source repo URL
+	newItems = argoutil.FilterByRepo(newItems, q.Repo)
+
+	// Sort found applications by name
 	sort.Slice(newItems, func(i, j int) bool {
 		return newItems[i].Name < newItems[j].Name
 	})
+
 	appList := appv1.ApplicationList{
 		ListMeta: metav1.ListMeta{
 			ResourceVersion: s.appInformer.LastSyncResourceVersion(),
@@ -165,8 +177,8 @@ func (s *Server) Create(ctx context.Context, q *application.ApplicationCreateReq
 		return nil, err
 	}
 
-	s.projectLock.Lock(q.Application.Spec.Project)
-	defer s.projectLock.Unlock(q.Application.Spec.Project)
+	s.projectLock.RLock(q.Application.Spec.Project)
+	defer s.projectLock.RUnlock(q.Application.Spec.Project)
 
 	a := q.Application
 	validate := true
@@ -212,6 +224,59 @@ func (s *Server) Create(ctx context.Context, q *application.ApplicationCreateReq
 	return updated, nil
 }
 
+func (s *Server) queryRepoServer(ctx context.Context, a *v1alpha1.Application, action func(
+	client apiclient.RepoServerServiceClient,
+	repo *appv1.Repository,
+	helmRepos []*appv1.Repository,
+	helmCreds []*v1alpha1.RepoCreds,
+	kustomizeOptions *v1alpha1.KustomizeOptions,
+) error) error {
+
+	closer, client, err := s.repoClientset.NewRepoServerClient()
+	if err != nil {
+		return err
+	}
+	defer ioutil.Close(closer)
+	repo, err := s.db.GetRepository(ctx, a.Spec.Source.RepoURL)
+	if err != nil {
+		return err
+	}
+	kustomizeSettings, err := s.settingsMgr.GetKustomizeSettings()
+	if err != nil {
+		return err
+	}
+	kustomizeOptions, err := kustomizeSettings.GetOptions(a.Spec.Source)
+	if err != nil {
+		return err
+	}
+	proj, err := argo.GetAppProject(&a.Spec, applisters.NewAppProjectLister(s.projInformer.GetIndexer()), s.ns, s.settingsMgr)
+	if err != nil {
+		if apierr.IsNotFound(err) {
+			return status.Errorf(codes.InvalidArgument, "application references project %s which does not exist", a.Spec.Project)
+		}
+		return err
+	}
+
+	helmRepos, err := s.db.ListHelmRepositories(ctx)
+	if err != nil {
+		return err
+	}
+
+	permittedHelmRepos, err := argo.GetPermittedRepos(proj, helmRepos)
+	if err != nil {
+		return err
+	}
+	helmRepositoryCredentials, err := s.db.GetAllHelmRepositoryCredentials(ctx)
+	if err != nil {
+		return err
+	}
+	permittedHelmCredentials, err := argo.GetPermittedReposCredentials(proj, helmRepositoryCredentials)
+	if err != nil {
+		return err
+	}
+	return action(client, repo, permittedHelmRepos, permittedHelmCredentials, kustomizeOptions)
+}
+
 // GetManifests returns application manifests
 func (s *Server) GetManifests(ctx context.Context, q *application.ApplicationManifestQuery) (*apiclient.ManifestResponse, error) {
 	a, err := s.appLister.Get(*q.Name)
@@ -221,71 +286,59 @@ func (s *Server) GetManifests(ctx context.Context, q *application.ApplicationMan
 	if err := s.enf.EnforceErr(ctx.Value("claims"), rbacpolicy.ResourceApplications, rbacpolicy.ActionGet, appRBACName(*a)); err != nil {
 		return nil, err
 	}
-	repo, err := s.db.GetRepository(ctx, a.Spec.Source.RepoURL)
-	if err != nil {
-		return nil, err
-	}
-	conn, repoClient, err := s.repoClientset.NewRepoServerClient()
-	if err != nil {
-		return nil, err
-	}
-	defer ioutil.Close(conn)
-	revision := a.Spec.Source.TargetRevision
-	if q.Revision != "" {
-		revision = q.Revision
-	}
-	appInstanceLabelKey, err := s.settingsMgr.GetAppInstanceLabelKey()
-	if err != nil {
-		return nil, err
-	}
-	helmRepos, err := s.db.ListHelmRepositories(ctx)
-	if err != nil {
-		return nil, err
-	}
 
-	plugins, err := s.plugins()
-	if err != nil {
-		return nil, err
-	}
-	// If source is Kustomize add build options
-	kustomizeSettings, err := s.settingsMgr.GetKustomizeSettings()
-	if err != nil {
-		return nil, err
-	}
-	kustomizeOptions, err := kustomizeSettings.GetOptions(a.Spec.Source)
-	if err != nil {
-		return nil, err
-	}
-	config, err := s.getApplicationClusterConfig(ctx, a)
-	if err != nil {
-		return nil, err
-	}
+	var manifestInfo *apiclient.ManifestResponse
+	err = s.queryRepoServer(ctx, a, func(
+		client apiclient.RepoServerServiceClient, repo *appv1.Repository, helmRepos []*appv1.Repository, helmCreds []*appv1.RepoCreds, kustomizeOptions *appv1.KustomizeOptions) error {
+		revision := a.Spec.Source.TargetRevision
+		if q.Revision != "" {
+			revision = q.Revision
+		}
+		appInstanceLabelKey, err := s.settingsMgr.GetAppInstanceLabelKey()
+		if err != nil {
+			return err
+		}
 
-	serverVersion, err := s.kubectl.GetServerVersion(config)
-	if err != nil {
-		return nil, err
-	}
+		plugins, err := s.plugins()
+		if err != nil {
+			return err
+		}
+		config, err := s.getApplicationClusterConfig(ctx, a)
+		if err != nil {
+			return err
+		}
 
-	apiGroups, err := s.kubectl.GetAPIGroups(config)
-	if err != nil {
-		return nil, err
-	}
-	manifestInfo, err := repoClient.GenerateManifest(ctx, &apiclient.ManifestRequest{
-		Repo:              repo,
-		Revision:          revision,
-		AppLabelKey:       appInstanceLabelKey,
-		AppName:           a.Name,
-		Namespace:         a.Spec.Destination.Namespace,
-		ApplicationSource: &a.Spec.Source,
-		Repos:             helmRepos,
-		Plugins:           plugins,
-		KustomizeOptions:  kustomizeOptions,
-		KubeVersion:       serverVersion,
-		ApiVersions:       argo.APIGroupsToVersions(apiGroups),
+		serverVersion, err := s.kubectl.GetServerVersion(config)
+		if err != nil {
+			return err
+		}
+
+		apiGroups, err := s.kubectl.GetAPIGroups(config)
+		if err != nil {
+			return err
+		}
+
+		manifestInfo, err = client.GenerateManifest(ctx, &apiclient.ManifestRequest{
+			Repo:              repo,
+			Revision:          revision,
+			AppLabelKey:       appInstanceLabelKey,
+			AppName:           a.Name,
+			Namespace:         a.Spec.Destination.Namespace,
+			ApplicationSource: &a.Spec.Source,
+			Repos:             helmRepos,
+			Plugins:           plugins,
+			KustomizeOptions:  kustomizeOptions,
+			KubeVersion:       serverVersion,
+			ApiVersions:       argo.APIGroupsToVersions(apiGroups),
+			HelmRepoCreds:     helmCreds,
+		})
+		return err
 	})
+
 	if err != nil {
 		return nil, err
 	}
+
 	for i, manifest := range manifestInfo.Manifests {
 		obj := &unstructured.Unstructured{}
 		err = json.Unmarshal([]byte(manifest), obj)
@@ -345,6 +398,29 @@ func (s *Server) Get(ctx context.Context, q *application.ApplicationQuery) (*app
 		return nil, err
 	}
 
+	if refreshType == appv1.RefreshTypeHard {
+		// force refresh cached application details
+		if err := s.queryRepoServer(ctx, a, func(
+			client apiclient.RepoServerServiceClient,
+			repo *appv1.Repository,
+			helmRepos []*appv1.Repository,
+			_ []*appv1.RepoCreds,
+			kustomizeOptions *appv1.KustomizeOptions,
+		) error {
+			_, err := client.GetAppDetails(ctx, &apiclient.RepoServerAppDetailsQuery{
+				Repo:             repo,
+				Source:           &app.Spec.Source,
+				AppName:          app.Name,
+				KustomizeOptions: kustomizeOptions,
+				Repos:            helmRepos,
+				NoCache:          true,
+			})
+			return err
+		}); err != nil {
+			log.Warnf("Failed to force refresh application details: %v", err)
+		}
+	}
+
 	minVersion := 0
 	if minVersion, err = strconv.Atoi(app.ResourceVersion); err != nil {
 		minVersion = 0
@@ -360,7 +436,7 @@ func (s *Server) Get(ctx context.Context, q *application.ApplicationQuery) (*app
 				if annotations == nil {
 					annotations = make(map[string]string)
 				}
-				if _, ok := annotations[argocommon.AnnotationKeyRefresh]; !ok {
+				if _, ok := annotations[appv1.AnnotationKeyRefresh]; !ok {
 					return &event.Application, nil
 				}
 			}
@@ -417,8 +493,8 @@ func (s *Server) ListResourceEvents(ctx context.Context, q *application.Applicat
 }
 
 func (s *Server) validateAndUpdateApp(ctx context.Context, newApp *appv1.Application, merge bool, validate bool) (*appv1.Application, error) {
-	s.projectLock.Lock(newApp.Spec.GetProject())
-	defer s.projectLock.Unlock(newApp.Spec.GetProject())
+	s.projectLock.RLock(newApp.Spec.GetProject())
+	defer s.projectLock.RUnlock(newApp.Spec.GetProject())
 
 	app, err := s.appclientset.ArgoprojV1alpha1().Applications(s.ns).Get(ctx, newApp.Name, metav1.GetOptions{})
 	if err != nil {
@@ -461,7 +537,7 @@ func (s *Server) waitSync(app *appv1.Application) {
 	minVersion, err := strconv.Atoi(app.ResourceVersion)
 	if err != nil {
 		logCtx.Warnf("waitSync failed: could not parse resource version %s", app.ResourceVersion)
-		time.Sleep(50 * time.Millisecond) // sleep anyways
+		time.Sleep(50 * time.Millisecond) // sleep anyway
 		return
 	}
 	for {
@@ -597,29 +673,38 @@ func (s *Server) Delete(ctx context.Context, q *application.ApplicationDeleteReq
 		return nil, err
 	}
 
-	s.projectLock.Lock(a.Spec.Project)
-	defer s.projectLock.Unlock(a.Spec.Project)
+	s.projectLock.RLock(a.Spec.Project)
+	defer s.projectLock.RUnlock(a.Spec.Project)
 
 	if err := s.enf.EnforceErr(ctx.Value("claims"), rbacpolicy.ResourceApplications, rbacpolicy.ActionDelete, appRBACName(*a)); err != nil {
 		return nil, err
 	}
 
+	if q.Cascade != nil && !*q.Cascade && q.GetPropagationPolicy() != "" {
+		return nil, status.Error(codes.InvalidArgument, "cannot set propagation policy when cascading is disabled")
+	}
+
 	patchFinalizer := false
 	if q.Cascade == nil || *q.Cascade {
-		if !a.CascadedDeletion() {
-			a.SetCascadedDeletion(true)
+		// validate the propgation policy
+		policyFinalizer := getPropagationPolicyFinalizer(q.GetPropagationPolicy())
+		if policyFinalizer == "" {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid propagation policy: %s", *q.PropagationPolicy)
+		}
+		if !a.IsFinalizerPresent(policyFinalizer) {
+			a.SetCascadedDeletion(policyFinalizer)
 			patchFinalizer = true
 		}
 	} else {
 		if a.CascadedDeletion() {
-			a.SetCascadedDeletion(false)
+			a.UnSetCascadedDeletion()
 			patchFinalizer = true
 		}
 	}
 
 	if patchFinalizer {
-		// Although the cascaded deletion finalizer is not set when apps are created via API,
-		// they will often be set by the user as part of declarative config. As part of a delete
+		// Although the cascaded deletion/propagation policy finalizer is not set when apps are created via
+		// API, they will often be set by the user as part of declarative config. As part of a delete
 		// request, we always calculate the patch to see if we need to set/unset the finalizer.
 		patch, err := json.Marshal(map[string]interface{}{
 			"metadata": map[string]interface{}{
@@ -666,7 +751,7 @@ func (s *Server) Watch(q *application.ApplicationQuery, ws application.Applicati
 		if appVersion, err := strconv.Atoi(a.ResourceVersion); err == nil && appVersion < minVersion {
 			return
 		}
-		matchedEvent := q.GetName() == "" || a.Name == q.GetName() && selector.Matches(labels.Set(a.Labels))
+		matchedEvent := (q.GetName() == "" || a.Name == q.GetName()) && selector.Matches(labels.Set(a.Labels))
 		if !matchedEvent {
 			return
 		}
@@ -695,6 +780,9 @@ func (s *Server) Watch(q *application.ApplicationQuery, ws application.Applicati
 		if err != nil {
 			return err
 		}
+		sort.Slice(apps, func(i, j int) bool {
+			return apps[i].Name < apps[j].Name
+		})
 		for i := range apps {
 			sendIfPermitted(*apps[i], watch.Added)
 		}
@@ -712,7 +800,7 @@ func (s *Server) Watch(q *application.ApplicationQuery, ws application.Applicati
 }
 
 func (s *Server) validateAndNormalizeApp(ctx context.Context, app *appv1.Application, validate bool) error {
-	proj, err := s.appclientset.ArgoprojV1alpha1().AppProjects(s.ns).Get(ctx, app.Spec.GetProject(), metav1.GetOptions{})
+	proj, err := argo.GetAppProject(&app.Spec, applisters.NewAppProjectLister(s.projInformer.GetIndexer()), s.ns, s.settingsMgr)
 	if err != nil {
 		if apierr.IsNotFound(err) {
 			return status.Errorf(codes.InvalidArgument, "application references project %s which does not exist", app.Spec.Project)
@@ -760,7 +848,7 @@ func (s *Server) validateAndNormalizeApp(ctx context.Context, app *appv1.Applica
 
 	var conditions []appv1.ApplicationCondition
 	if validate {
-		conditions, err = argo.ValidateRepo(ctx, app, s.repoClientset, s.db, kustomizeOptions, plugins, s.kubectl)
+		conditions, err = argo.ValidateRepo(ctx, app, s.repoClientset, s.db, kustomizeOptions, plugins, s.kubectl, proj)
 		if err != nil {
 			return err
 		}
@@ -939,15 +1027,22 @@ func (s *Server) DeleteResource(ctx context.Context, q *application.ApplicationR
 	if err != nil {
 		return nil, err
 	}
-
 	if err := s.enf.EnforceErr(ctx.Value("claims"), rbacpolicy.ResourceApplications, rbacpolicy.ActionDelete, appRBACName(*a)); err != nil {
 		return nil, err
 	}
-	var force bool
-	if q.Force != nil {
-		force = *q.Force
+	var deleteOption metav1.DeleteOptions
+	if q.GetOrphan() {
+		propagationPolicy := metav1.DeletePropagationOrphan
+		deleteOption = metav1.DeleteOptions{PropagationPolicy: &propagationPolicy}
+	} else if q.GetForce() {
+		propagationPolicy := metav1.DeletePropagationBackground
+		zeroGracePeriod := int64(0)
+		deleteOption = metav1.DeleteOptions{PropagationPolicy: &propagationPolicy, GracePeriodSeconds: &zeroGracePeriod}
+	} else {
+		propagationPolicy := metav1.DeletePropagationForeground
+		deleteOption = metav1.DeleteOptions{PropagationPolicy: &propagationPolicy}
 	}
-	err = s.kubectl.DeleteResource(ctx, config, res.GroupKindVersion(), res.Name, res.Namespace, force)
+	err = s.kubectl.DeleteResource(ctx, config, res.GroupKindVersion(), res.Name, res.Namespace, deleteOption)
 	if err != nil {
 		return nil, err
 	}
@@ -1128,16 +1223,21 @@ func (s *Server) PodLogs(q *application.ApplicationPodLogsQuery, ws application.
 			SinceTime:    q.SinceTime,
 			TailLines:    tailLines,
 		}).Stream(ws.Context())
-		if err != nil {
-			return err
-		}
 		podName := pod.Name
 		logStream := make(chan logEntry)
-		defer ioutil.Close(stream)
+		if err == nil {
+			defer ioutil.Close(stream)
+		}
 
 		streams = append(streams, logStream)
 		go func() {
-			parseLogsStream(podName, stream, logStream)
+			// if k8s failed to start steaming logs (typically because Pod is not ready yet)
+			// then the error should be shown in the UI so that user know the reason
+			if err != nil {
+				logStream <- logEntry{line: err.Error()}
+			} else {
+				parseLogsStream(podName, stream, logStream)
+			}
 			close(logStream)
 		}()
 	}
@@ -1327,7 +1427,11 @@ func (s *Server) Sync(ctx context.Context, syncReq *application.ApplicationSyncR
 		if len(syncReq.Resources) > 0 {
 			partial = "partial "
 		}
-		s.logAppEvent(a, ctx, argo.EventReasonOperationStarted, fmt.Sprintf("initiated %ssync to %s", partial, displayRevision))
+		reason := fmt.Sprintf("initiated %ssync to %s", partial, displayRevision)
+		if syncReq.Manifests != nil {
+			reason = fmt.Sprintf("initiated %ssync locally", partial)
+		}
+		s.logAppEvent(a, ctx, argo.EventReasonOperationStarted, reason)
 	}
 	return a, err
 }
@@ -1390,6 +1494,9 @@ func (s *Server) Rollback(ctx context.Context, rollbackReq *application.Applicat
 // resolveRevision resolves the revision specified either in the sync request, or the
 // application source, into a concrete revision that will be used for a sync operation.
 func (s *Server) resolveRevision(ctx context.Context, app *appv1.Application, syncReq *application.ApplicationSyncRequest) (string, string, error) {
+	if syncReq.Manifests != nil {
+		return "", "", nil
+	}
 	ambiguousRevision := syncReq.Revision
 	if ambiguousRevision == "" {
 		ambiguousRevision = app.Spec.Source.TargetRevision
@@ -1403,7 +1510,7 @@ func (s *Server) resolveRevision(ctx context.Context, app *appv1.Application, sy
 		if helm.IsVersion(ambiguousRevision) {
 			return ambiguousRevision, ambiguousRevision, nil
 		}
-		client := helm.NewClient(repo.Repo, repo.GetHelmCreds(), repo.EnableOCI || app.Spec.Source.IsHelmOci())
+		client := helm.NewClient(repo.Repo, repo.GetHelmCreds(), repo.EnableOCI || app.Spec.Source.IsHelmOci(), repo.Proxy)
 		index, err := client.GetIndex(false)
 		if err != nil {
 			return "", "", err
@@ -1430,7 +1537,7 @@ func (s *Server) resolveRevision(ctx context.Context, app *appv1.Application, sy
 		if err != nil {
 			return "", "", err
 		}
-		gitClient, err := git.NewClient(repo.Repo, repo.GetGitCreds(), repo.IsInsecure(), repo.IsLFSEnabled())
+		gitClient, err := git.NewClient(repo.Repo, repo.GetGitCreds(), repo.IsInsecure(), repo.IsLFSEnabled(), repo.Proxy)
 		if err != nil {
 			return "", "", err
 		}
@@ -1720,4 +1827,17 @@ func convertSyncWindows(w *v1alpha1.SyncWindows) []*application.ApplicationSyncW
 		}
 	}
 	return nil
+}
+
+func getPropagationPolicyFinalizer(policy string) string {
+	switch strings.ToLower(policy) {
+	case backgroundPropagationPolicy:
+		return appv1.BackgroundPropagationPolicyFinalizer
+	case foregroundPropagationPolicy:
+		return appv1.ForegroundPropagationPolicyFinalizer
+	case "":
+		return appv1.ResourcesFinalizerName
+	default:
+		return ""
+	}
 }

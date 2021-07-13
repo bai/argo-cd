@@ -26,6 +26,7 @@ argocd repocreds add REPOURL [flags]
 ### Options
 
 ```
+      --enable-oci                              Specifies whether helm-oci support should be enabled for this repo
       --github-app-enterprise-base-url string   base url to use when using GitHub Enterprise (e.g. https://ghe.example.com/api/v3
       --github-app-id int                       id of the GitHub Application
       --github-app-installation-id int          installation id of the GitHub Application
@@ -35,6 +36,7 @@ argocd repocreds add REPOURL [flags]
       --ssh-private-key-path string             path to the private ssh key (e.g. ~/.ssh/id_rsa)
       --tls-client-cert-key-path string         path to the TLS client cert's key path (must be PEM format)
       --tls-client-cert-path string             path to the TLS client cert (must be PEM format)
+      --type string                             type of the repository, "git" or "helm" (default "git")
       --upsert                                  Override an existing repository with the same name even if the spec differs
       --username string                         username to the repository
 ```
@@ -49,6 +51,7 @@ argocd repocreds add REPOURL [flags]
       --grpc-web                        Enables gRPC-web protocol. Useful if Argo CD server is behind proxy which does not support HTTP2.
       --grpc-web-root-path string       Enables gRPC-web protocol. Useful if Argo CD server is behind proxy which does not support HTTP2. Set web root.
   -H, --header strings                  Sets additional header to all requests made by Argo CD CLI. (Can be repeated multiple times to add multiple headers, also supports comma separated headers)
+      --http-retry-max int              Maximum number of retries to establish http connection to Argo CD server
       --insecure                        Skip server certificate and domain verification
       --logformat string                Set the logging format. One of: text|json (default "text")
       --loglevel string                 Set the logging level. One of: debug|info|warn|error (default "info")

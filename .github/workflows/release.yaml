@@ -10,6 +10,10 @@ on:
       - '!release-v1.1*'
       - '!release-v1.0*'
       - '!release-v0*'
+
+env:
+    GOLANG_VERSION: '1.16.5'
+
 jobs:
   prepare-release:
     name: Perform automatic release on trigger ${{ github.ref }}
@@ -18,7 +22,7 @@ jobs:
       # The name of the tag as supplied by the GitHub event
       SOURCE_TAG: ${{ github.ref }}
       # The image namespace where Docker image will be published to
-      IMAGE_NAMESPACE: argoproj
+      IMAGE_NAMESPACE: quay.io/argoproj
       # Whether to create & push image and release assets
       DRY_RUN: false
       # Whether a draft release should be created, instead of public one
@@ -139,7 +143,7 @@ jobs:
       - name: Setup Golang
         uses: actions/setup-go@v1
         with:
-          go-version: '1.14.12'
+          go-version: ${{ env.GOLANG_VERSION }}
 
       - name: Setup Git author information
         run: |
@@ -197,11 +201,12 @@ jobs:
           QUAY_TOKEN: ${{ secrets.RELEASE_QUAY_TOKEN }}
         run: |
           set -ue
-          docker login --username "${DOCKER_USERNAME}" --password "${DOCKER_TOKEN}"
-          docker push ${IMAGE_NAMESPACE}/argocd:v${TARGET_VERSION}
           docker login quay.io --username "${QUAY_USERNAME}" --password "${QUAY_TOKEN}"
-          docker tag ${IMAGE_NAMESPACE}/argocd:v${TARGET_VERSION} quay.io/${IMAGE_NAMESPACE}/argocd:v${TARGET_VERSION}
-          docker push quay.io/${IMAGE_NAMESPACE}/argocd:v${TARGET_VERSION}
+          docker push ${IMAGE_NAMESPACE}/argocd:v${TARGET_VERSION}
+          # Remove the following when Docker Hub is gone
+          docker login --username "${DOCKER_USERNAME}" --password "${DOCKER_TOKEN}"
+          docker tag ${IMAGE_NAMESPACE}/argocd:v${TARGET_VERSION} argoproj/argocd:v${TARGET_VERSION}
+          docker push argoproj/argocd:v${TARGET_VERSION}
         if: ${{ env.DRY_RUN != 'true' }}
 
       - name: Read release notes file

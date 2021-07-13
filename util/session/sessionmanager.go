@@ -20,17 +20,17 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/argoproj/argo-cd/common"
-	"github.com/argoproj/argo-cd/pkg/client/listers/application/v1alpha1"
-	"github.com/argoproj/argo-cd/server/rbacpolicy"
-	"github.com/argoproj/argo-cd/util/cache/appstate"
-	"github.com/argoproj/argo-cd/util/dex"
-	"github.com/argoproj/argo-cd/util/env"
-	httputil "github.com/argoproj/argo-cd/util/http"
-	jwtutil "github.com/argoproj/argo-cd/util/jwt"
-	oidcutil "github.com/argoproj/argo-cd/util/oidc"
-	passwordutil "github.com/argoproj/argo-cd/util/password"
-	"github.com/argoproj/argo-cd/util/settings"
+	"github.com/argoproj/argo-cd/v2/common"
+	"github.com/argoproj/argo-cd/v2/pkg/client/listers/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v2/server/rbacpolicy"
+	"github.com/argoproj/argo-cd/v2/util/cache/appstate"
+	"github.com/argoproj/argo-cd/v2/util/dex"
+	"github.com/argoproj/argo-cd/v2/util/env"
+	httputil "github.com/argoproj/argo-cd/v2/util/http"
+	jwtutil "github.com/argoproj/argo-cd/v2/util/jwt"
+	oidcutil "github.com/argoproj/argo-cd/v2/util/oidc"
+	passwordutil "github.com/argoproj/argo-cd/v2/util/password"
+	"github.com/argoproj/argo-cd/v2/util/settings"
 )
 
 // SessionManager generates and validates JWT tokens for login sessions.
@@ -55,6 +55,7 @@ type LoginAttempts struct {
 const (
 	// SessionManagerClaimsIssuer fills the "iss" field of the token.
 	SessionManagerClaimsIssuer = "argocd"
+	AuthErrorCtxKey            = "auth-error"
 
 	// invalidLoginError, for security purposes, doesn't say whether the username or password was invalid.  This does not mitigate the potential for timing attacks to determine which is which.
 	invalidLoginError           = "Invalid username or password"
@@ -529,6 +530,10 @@ func (mgr *SessionManager) VerifyToken(tokenString string) (jwt.Claims, string, 
 		if err != nil {
 			return claims, "", err
 		}
+		if idToken == nil {
+			return claims, "", fmt.Errorf("No audience found in the token")
+		}
+
 		var claims jwt.MapClaims
 		err = idToken.Claims(&claims)
 		return claims, "", err
@@ -555,7 +560,7 @@ func (mgr *SessionManager) RevokeToken(ctx context.Context, id string, expiringA
 }
 
 func LoggedIn(ctx context.Context) bool {
-	return Sub(ctx) != ""
+	return Sub(ctx) != "" && ctx.Value(AuthErrorCtxKey) == nil
 }
 
 // Username is a helper to extract a human readable username from a context

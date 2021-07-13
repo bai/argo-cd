@@ -1,6 +1,119 @@
 # Changelog
 
-## v1.8.0 (Unreleased)
+## v2.0.1 (2021-04-15)
+
+### Bug Fixes
+
+* fix: spark application check fails on missing section (#6036)
+* fix: Adding explicit bind to redis and sentinel for IPv4 clusters #5957 (#6005)
+* fix: fix: use correct field for evaluating whether or not GitHub Enterprise is selected (#5987)
+
+## v2.0.0 (2021-04-07)
+
+> [Upgrade instructions](./docs/operator-manual/upgrading/1.8-2.0.md)
+
+### Pods View
+
+Pods View is particularly useful for applications that have hundreds of pods. Instead of visualizing all Kubernetes
+resources for the application, it only shows Kubernetes pods and closely related resources. The Pods View supports
+grouping related resources by Parent Resource, Top Level Parent, or by Node. Each way of grouping solves a particular
+use case. For example grouping by Top Level Parent allows you to quickly find how many pods your application is running
+and which resources created them. Grouping by Node allows to see how Pods are spread across the nodes and how many
+resources they requested.
+
+
+### Logs Viewer
+
+Argo CD provides a way to see live logs of pods, which is very useful for debugging and troubleshooting. In the v2.0
+release, the log visualization has been rewritten to support pagination, filtering, the ability to disable/enable log
+streaming, and even a dark mode for terminal lovers. Do you want to see aggregated logs of multiple deployment pods?
+Not a problem! Just click on the parent resource such as Deployment, ReplicaSet, or StatefulSet and navigate
+to the Logs tab.
+
+### Banner Feature
+
+Want to notify your Argo CD users of upcoming changes? Just specify the notification message and optional URL using the
+`ui.bannercontent` and `ui.bannerurl` attributes in the `argocd-cm` ConfigMap. 
+
+### Core Features
+
+* The new sync option `PrunePropagationPolicy=background` allows using background deletion during syncing
+* New application finalizer `resources-finalizer.argocd.argoproj.io:background` allows using background deletion when the application is deleted
+* The new sync option `ApplyOutOfSyncOnly=true` allows skipping syncing resources that are already in the desired state.
+* The new sync option `PruneLast=true` allows deferring resource pruning until the last synchronization phase after all other resources are synced and healthy.
+
+### The argocd-util CLI
+
+Argo CD Util is a CLI tool that contains useful commands for operators who manage Argo CD. Starting from this release
+the Argo CD Utility is published with every Argo CD release as a Homebrew installation.
+
+## v1.8.7 (2021-02-26)
+
+### Important note
+This release fixed a regression regarding which cluster resources are permitted on the AppProject level.
+Previous to this fix, after #3960 has been merged, all cluster resources were allowed on project level when neither of
+the allow or deny lists was defined. However, the correct behavior is to block all resources in this case.
+
+If you have Projects with empty allow and deny lists, but want the associated applications be able to sync cluster
+resources, you will have to adapt your cluster resources allow lists to explicitly allow the resources.
+
+- fix: redact sensitive data in logs (#5662)
+- fix: Properly escape HTML for error message from CLI SSO (#5563)
+- fix: Empty resource whitelist allowed all resources (#5540) (#5551)
+
+## v1.8.6 (2021-02-26)
+
+- fix: Properly escape HTML for error message from CLI SSO (#5563)
+- fix: API server should not print resource body when resource update fails (#5617)
+- fix: fix memory leak in application controller (#5604)
+
+## v1.8.5 (2021-02-19)
+
+- fix: 'argocd app wait --suspended' stuck if operation is in progress (#5511)
+- fix: Presync hooks stop working after namespace resource is added in a Helm chart #5522
+- docs: add the missing rbac resources to the documentation (#5476)
+- refactor: optimize argocd-application-controller redis usage (#5345)
+
+## v1.8.4 (2021-02-05)
+
+- feat: set X-XSS-Protection while serving static content (#5412)
+- fix: version info should be avaialble if anonymous access is enabled (#5422)
+- fix: disable jwt claim audience validation #5381 (#5413)
+- fix: /api/version should not return tools version for unauthenticated requests (#5415)
+- fix: account tokens should be rejected if required capability is disabled (#5414)
+- fix: tokens keep working after account is deactivated (#5402)
+- fix: a request which was using a revoked project token, would still be allowed to perform requests allowed by default policy (#5378)
+
+## v1.8.3 (2021-01-21)
+
+- fix: make sure JWT token time fields contain only integer values (#5228)
+
+## v1.8.2 (2021-01-09)
+
+### Bug Fixes
+
+- fix: updating cluster drops secret (#5220)
+- fix: remove invalid assumption about OCI helm chart path (#5179)
+- fix: Possible nil pointer dereference in repository API (#5128)
+- fix: Possible nil pointer dereference in repocreds API (#5130)
+- fix: use json serialization to store cache instead of github.com/vmihailenco/msgpack (#4965)
+- fix: add liveness probe to restart repo server if it fails to server tls requests (#5110) (#5119)
+- fix: Allow correct SSO redirect URL for CLI static client (#5098)
+- fix: add grpc health check (#5060)
+- fix: setting 'revision history limit' errors in UI (#5035)
+- fix: add api-server liveness probe that catches bad data in informer (#5026)
+
+### Refactoring
+
+- chore: Update Dex to v2.27.0 (#5058)
+- chore: Upgrade gorilla/handlers and gorilla/websocket (#5186)
+- chore: Upgrade jwt-go to 4.0.0-preview1 (#5184)
+
+## v1.8.1 (2020-12-09)
+
+- fix: sync retry is broken for multi-phase syncs (#5017)
+
+## v1.8.0 (2020-12-09)
 
 ### Mono-Repository Improvements
 
@@ -93,7 +206,7 @@ In addition to new features and enhancements, we’ve fixed more than 50 bugs an
 ## v1.7.5 (2020-09-15)
 
 - fix: app create with -f should not ignore other options (#4322)
-- fix: limit concurrent list requests accross all clusters (#4328)
+- fix: limit concurrent list requests across all clusters (#4328)
 - fix: fix possible deadlock in /v1/api/stream/applications and /v1/api/application APIs (#4315)
 - fix: WatchResourceTree does not enforce RBAC (#4311)
 - fix: app refresh API should use app resource version (#4303)
@@ -227,7 +340,7 @@ use cases, such as bootstrapping a Kubernetes cluster, or decentralized manageme
 
 #### Other
 
-- refactoring: Gitops engine (#3066)
+- refactoring: GitOps engine (#3066)
 
 ## v1.5.8 (2020-06-16)
 
@@ -290,7 +403,7 @@ customizations, custom resource health checks, and more.
 ### Other
 
 * New Project and Application CRD settings ([#2900](https://github.com/argoproj/argo-cd/issues/2900), [#2873](https://github.com/argoproj/argo-cd/issues/2873)) that allows customizing Argo CD behavior.
-* Upgraded Dex (v2.22.0) enables seamless [SSO integration](https://www.openshift.com/blog/openshift-authentication-integration-with-argocd) with Openshift.
+* Upgraded Dex (v2.22.0) enables seamless [SSO integration](https://www.openshift.com/blog/openshift-authentication-integration-with-argocd) with OpenShift.
 
 
 #### Enhancements
@@ -322,7 +435,7 @@ customizations, custom resource health checks, and more.
 * fix for helm repo add with flag --insecure-skip-server-verification (#3420)
 * fix: app diff --local support for helm repo. #3151 (#3407)
 * fix: Syncing apps incorrectly states "app synced", but this is not true (#3286)
-* fix: for jsonnet when it is localed in nested subdirectory and uses import (#3372)
+* fix: for jsonnet when it is located in nested subdirectory and uses import (#3372)
 * fix: Update 4.5.3 redis-ha helm manifest (#3370)
 * fix: return 401 error code if username does not exist (#3369)
 * fix: Do not panic while running hooks with short revision (#3368)
@@ -438,7 +551,7 @@ Last-minute bugs that will be addressed in 1.5.1 shortly:
 - fix: argocd-util backup produced truncated backups. import app status (#3096)
 - fix: upgrade redis-ha chart and enable haproxy (#3147)
 - fix: make dex server deployment init container resilient to restarts (#3136)
-- fix: reduct secret values of manifests stored in git (#3088)
+- fix: redact secret values of manifests stored in git (#3088)
 - fix: labels not being deleted via UI (#3081)
 - fix: HTTP|HTTPS|NO_PROXY env variable reading #3055 (#3063)
 - fix: Correct usage text for repo add command regarding insecure repos (#3068)
@@ -548,7 +661,7 @@ an in-flight state for all Kubernetes resources including `Deployment`, `PVC`, `
 [Sync Waves](https://argoproj.github.io/argo-cd/user-guide/sync-waves/) instead.
 
 #### Enhancements
-* feat: Add custom healthchecks for cert-manager v0.11.0 (#2689) 
+* feat: Add custom health checks for cert-manager v0.11.0 (#2689) 
 * feat: add git submodule support (#2495)
 * feat: Add repository credential management API and CLI (addresses #2136) (#2207)
 * feat: add support for --additional-headers cli flag (#2467)
@@ -733,7 +846,7 @@ There may be instances when you want to control the times during which an Argo C
 #### Bug Fixes
 
 - failed parsing on parameters with comma (#1660)
-- Statefulset with OnDelete Update Strategy stuck progressing (#1881)
+- StatefulSet with OnDelete Update Strategy stuck progressing (#1881)
 - Warning during secret diffing (#1923)
 - Error message "Unable to load data: key is missing" is confusing (#1944)
 - OIDC group bindings are truncated (#2006)
@@ -815,7 +928,7 @@ There may be instances when you want to control the times during which an Argo C
 ## v1.2.3 (2019-10-1)
 * Make argo-cd docker images openshift friendly (#2362) (@duboisf)
 * Add dest-server and dest-namespace field to reconciliation logs (#2354)
-- Stop loggin /repository.RepositoryService/ValidateAccess parameters (#2386)
+- Stop logging /repository.RepositoryService/ValidateAccess parameters (#2386)
 
 ## v1.2.2 (2019-09-26)
 + Resource action equivalent to `kubectl rollout restart` (#2177)
@@ -900,7 +1013,7 @@ Support for Git LFS enabled repositories - now you can store Helm charts as tar 
 - Wait for CRD creation during sync process (#1940)
 - Added a button to select out of sync items in the sync panel (#1902)
 - Proper handling of an excluded resource in an application (#1621)
-- Stop repeating logs on stoped container (#1614)
+- Stop repeating logs on stopped container (#1614)
 - Fix git repo url parsing on application list view (#2174)
 - Fix nil pointer dereference error during app reconciliation (#2146)
 - Fix history api fallback implementation to support app names with dots (#2114)
@@ -956,7 +1069,7 @@ optimized which significantly reduced the number of Git requests. With v1.1 rele
 #### User Defined Application Metadata
 
 User-defined Application metadata enables the user to define a list of useful URLs for their specific application and expose those links on the UI
-(e.g. reference tp a CI pipeline or an application-specific management tool). These links should provide helpful shortcuts that make easier to integrate Argo CD into existing
+(e.g. reference to a CI pipeline or an application-specific management tool). These links should provide helpful shortcuts that make easier to integrate Argo CD into existing
 systems by making it easier to find other components inside and outside Argo CD.
 
 ### Deprecation Notice
@@ -1320,7 +1433,7 @@ has a minimum client version of v0.12.0. Older CLI clients will be rejected.
 * Deprecate componentParameterOverrides in favor of source specific config (#1207)
 * Support talking to Dex using local cluster address instead of public address (#1211)
 * Use Recreate deployment strategy for controller (#1315)
-* Honor os environment variables for helm commands (#1306) (@1337andre)
+* Honor OS environment variables for helm commands (#1306) (@1337andre)
 * Disable CGO_ENABLED for server/controller binaries (#1286)
 * Documentation fixes and improvements (@twz123, @yann-soubeyrand, @OmerKahani, @dulltz)
 - Fix CRD creation/deletion handling (#1249)
@@ -1812,8 +1925,8 @@ RBAC policy rules, need to be rewritten to include one extra column with the eff
 + Override parameters
 
 ## v0.1.0 (2018-03-12)
-+ Define app in Github with dev and preprod environment using KSonnet
++ Define app in GitHub with dev and preprod environment using KSonnet
 + Add cluster Diff App with a cluster Deploy app in a cluster
 + Deploy a new version of the app in the cluster
-+ App sync based on Github app config change - polling only
++ App sync based on GitHub app config change - polling only
 + Basic UI: App diff between Git and k8s cluster for all environments Basic GUI

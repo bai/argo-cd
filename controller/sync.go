@@ -15,15 +15,16 @@ import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/kubectl/pkg/util/openapi"
 
-	cdcommon "github.com/argoproj/argo-cd/common"
-	"github.com/argoproj/argo-cd/controller/metrics"
-	"github.com/argoproj/argo-cd/pkg/apis/application/v1alpha1"
-	listersv1alpha1 "github.com/argoproj/argo-cd/pkg/client/listers/application/v1alpha1"
-	"github.com/argoproj/argo-cd/util/argo"
-	logutils "github.com/argoproj/argo-cd/util/log"
-	"github.com/argoproj/argo-cd/util/lua"
-	"github.com/argoproj/argo-cd/util/rand"
+	cdcommon "github.com/argoproj/argo-cd/v2/common"
+	"github.com/argoproj/argo-cd/v2/controller/metrics"
+	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	listersv1alpha1 "github.com/argoproj/argo-cd/v2/pkg/client/listers/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v2/util/argo"
+	logutils "github.com/argoproj/argo-cd/v2/util/log"
+	"github.com/argoproj/argo-cd/v2/util/lua"
+	"github.com/argoproj/argo-cd/v2/util/rand"
 )
 
 var syncIdPrefix uint64 = 0
@@ -33,6 +34,14 @@ const (
 	// each sync-wave
 	EnvVarSyncWaveDelay = "ARGOCD_SYNC_WAVE_DELAY"
 )
+
+func (m *appStateManager) getOpenAPISchema(server string) (openapi.Resources, error) {
+	cluster, err := m.liveStateCache.GetClusterCache(server)
+	if err != nil {
+		return nil, err
+	}
+	return cluster.GetOpenAPISchema(), nil
+}
 
 func (m *appStateManager) SyncAppState(app *v1alpha1.Application, state *v1alpha1.OperationState) {
 	// Sync requests might be requested with ambiguous revisions (e.g. master, HEAD, v1.2.3).
@@ -85,7 +94,7 @@ func (m *appStateManager) SyncAppState(app *v1alpha1.Application, state *v1alpha
 		return
 	}
 
-	compareResult := m.CompareAppState(app, proj, revision, source, false, syncOp.Manifests)
+	compareResult := m.CompareAppState(app, proj, revision, source, false, true, syncOp.Manifests)
 	// We now have a concrete commit SHA. Save this in the sync result revision so that we remember
 	// what we should be syncing to when resuming operations.
 	syncRes.Revision = compareResult.syncStatus.Revision
@@ -136,13 +145,31 @@ func (m *appStateManager) SyncAppState(app *v1alpha1.Application, state *v1alpha
 		})
 	}
 
-	syncCtx, err := sync.NewSyncContext(
+	prunePropagationPolicy := v1.DeletePropagationForeground
+	switch {
+	case syncOp.SyncOptions.HasOption("PrunePropagationPolicy=background"):
+		prunePropagationPolicy = v1.DeletePropagationBackground
+	case syncOp.SyncOptions.HasOption("PrunePropagationPolicy=foreground"):
+		prunePropagationPolicy = v1.DeletePropagationForeground
+	case syncOp.SyncOptions.HasOption("PrunePropagationPolicy=orphan"):
+		prunePropagationPolicy = v1.DeletePropagationOrphan
+	}
+
+	openAPISchema, err := m.getOpenAPISchema(clst.Server)
+	if err != nil {
+		state.Phase = common.OperationError
+		state.Message = fmt.Sprintf("failed to load openAPISchema: %v", err)
+		return
+	}
+
+	syncCtx, cleanup, err := sync.NewSyncContext(
 		compareResult.syncStatus.Revision,
 		compareResult.reconciliationResult,
 		restConfig,
 		rawConfig,
 		m.kubectl,
 		app.Spec.Destination.Namespace,
+		openAPISchema,
 		sync.WithLogr(logutils.NewLogrusLogger(logEntry)),
 		sync.WithHealthOverride(lua.ResourceHealthOverrides(resourceOverrides)),
 		sync.WithPermissionValidator(func(un *unstructured.Unstructured, res *v1.APIResource) error {
@@ -159,7 +186,7 @@ func (m *appStateManager) SyncAppState(app *v1alpha1.Application, state *v1alpha
 		sync.WithResourcesFilter(func(key kube.ResourceKey, target *unstructured.Unstructured, live *unstructured.Unstructured) bool {
 			return len(syncOp.Resources) == 0 || argo.ContainsSyncResource(key.Name, key.Namespace, schema.GroupVersionKind{Kind: key.Kind, Group: key.Group}, syncOp.Resources)
 		}),
-		sync.WithManifestValidation(!syncOp.SyncOptions.HasOption("Validate=false")),
+		sync.WithManifestValidation(!syncOp.SyncOptions.HasOption(common.SyncOptionsDisableValidation)),
 		sync.WithNamespaceCreation(syncOp.SyncOptions.HasOption("CreateNamespace=true"), func(un *unstructured.Unstructured) bool {
 			if un != nil && kube.GetAppInstanceLabel(un, cdcommon.LabelKeyAppInstance) != "" {
 				kube.UnsetLabel(un, cdcommon.LabelKeyAppInstance)
@@ -168,14 +195,19 @@ func (m *appStateManager) SyncAppState(app *v1alpha1.Application, state *v1alpha
 			return false
 		}),
 		sync.WithSyncWaveHook(delayBetweenSyncWaves),
-		sync.WithPruneLast(syncOp.SyncOptions.HasOption("PruneLast=true")),
+		sync.WithPruneLast(syncOp.SyncOptions.HasOption(common.SyncOptionPruneLast)),
 		sync.WithResourceModificationChecker(syncOp.SyncOptions.HasOption("ApplyOutOfSyncOnly=true"), compareResult.diffResultList),
+		sync.WithPrunePropagationPolicy(&prunePropagationPolicy),
+		sync.WithReplace(syncOp.SyncOptions.HasOption(common.SyncOptionReplace)),
 	)
 
 	if err != nil {
 		state.Phase = common.OperationError
-		state.Message = fmt.Sprintf("failed to record sync to history: %v", err)
+		state.Message = fmt.Sprintf("failed to initialize sync context: %v", err)
+		return
 	}
+
+	defer cleanup()
 
 	start := time.Now()
 

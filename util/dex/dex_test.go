@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -12,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	// "github.com/argoproj/argo-cd/common"
-	"github.com/argoproj/argo-cd/util/settings"
+	"github.com/argoproj/argo-cd/v2/util/settings"
 )
 
 const invalidURL = ":://localhost/foo/bar"
@@ -270,7 +271,9 @@ func Test_GenerateDexConfig(t *testing.T) {
 
 func Test_DexReverseProxy(t *testing.T) {
 	t.Run("Good case", func(t *testing.T) {
+		var host string
 		fakeDex := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+			host = req.Host
 			rw.WriteHeader(http.StatusOK)
 		}))
 		defer fakeDex.Close()
@@ -278,10 +281,12 @@ func Test_DexReverseProxy(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(NewDexHTTPReverseProxy(fakeDex.URL, "/")))
 		fmt.Printf("Fake API Server listening on %s\n", server.URL)
 		defer server.Close()
+		target, _ := url.Parse(fakeDex.URL)
 		resp, err := http.Get(server.URL)
 		assert.NotNil(t, resp)
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, host, target.Host)
 		fmt.Printf("%s\n", resp.Status)
 	})
 

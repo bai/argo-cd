@@ -1,5 +1,6 @@
 import * as deepMerge from 'deepmerge';
 import {Observable} from 'rxjs';
+import {map, repeat, retry} from 'rxjs/operators';
 
 import * as models from '../models';
 import requests from './requests';
@@ -56,7 +57,7 @@ export class ApplicationsService {
     }
 
     public watchResourceTree(name: string): Observable<models.ApplicationTree> {
-        return requests.loadEventSource(`/stream/applications/${name}/resource-tree`).map(data => JSON.parse(data).result as models.ApplicationTree);
+        return requests.loadEventSource(`/stream/applications/${name}/resource-tree`).pipe(map(data => JSON.parse(data).result as models.ApplicationTree));
     }
 
     public managedResources(name: string, options: {id?: models.ResourceID; fields?: string[]} = {}): Promise<models.ResourceDiff[]> {
@@ -111,10 +112,18 @@ export class ApplicationsService {
             .then(res => this.parseAppFields(res.body));
     }
 
-    public delete(name: string, cascade: boolean): Promise<boolean> {
+    public delete(name: string, propagationPolicy: string): Promise<boolean> {
+        let cascade = true;
+        if (propagationPolicy === 'non-cascading') {
+            propagationPolicy = '';
+            cascade = false;
+        }
         return requests
             .delete(`/applications/${name}`)
-            .query({cascade})
+            .query({
+                cascade,
+                propagationPolicy
+            })
             .send({})
             .then(() => true);
     }
@@ -138,13 +147,15 @@ export class ApplicationsService {
         const url = `/stream/applications${(searchStr && '?' + searchStr) || ''}`;
         return requests
             .loadEventSource(url)
-            .repeat()
-            .retry()
-            .map(data => JSON.parse(data).result as models.ApplicationWatchEvent)
-            .map(watchEvent => {
-                watchEvent.application = this.parseAppFields(watchEvent.application);
-                return watchEvent;
-            });
+            .pipe(repeat())
+            .pipe(retry())
+            .pipe(map(data => JSON.parse(data).result as models.ApplicationWatchEvent))
+            .pipe(
+                map(watchEvent => {
+                    watchEvent.application = this.parseAppFields(watchEvent.application);
+                    return watchEvent;
+                })
+            );
     }
 
     public sync(
@@ -169,6 +180,12 @@ export class ApplicationsService {
             .then(() => true);
     }
 
+    public getDownloadLogsURL(applicationName: string, namespace: string, podName: string, resource: {group: string; kind: string; name: string}, containerName: string): string {
+        const search = this.getLogsQuery(namespace, podName, resource, containerName, null, false);
+        search.set('download', 'true');
+        return `api/v1/applications/${applicationName}/logs?${search.toString()}`;
+    }
+
     public getContainerLogs(
         applicationName: string,
         namespace: string,
@@ -180,32 +197,8 @@ export class ApplicationsService {
         untilTime?: string,
         filter?: string
     ): Observable<models.LogEntry> {
-        if (follow === undefined || follow === null) {
-            follow = true;
-        }
-        const search = new URLSearchParams();
-        search.set('container', containerName);
-        search.set('namespace', namespace);
-        if (follow) {
-            search.set('follow', follow.toString());
-        }
-        if (podName) {
-            search.set('podName', podName);
-        } else {
-            search.set('group', resource.group);
-            search.set('kind', resource.kind);
-            search.set('resourceName', resource.name);
-        }
-        if (tail) {
-            search.set('tailLines', tail.toString());
-        }
-        if (untilTime) {
-            search.set('untilTime', untilTime);
-        }
-        if (filter) {
-            search.set('filter', filter);
-        }
-        const entries = requests.loadEventSource(`/applications/${applicationName}/logs?${search.toString()}`).map(data => JSON.parse(data).result as models.LogEntry);
+        const search = this.getLogsQuery(namespace, podName, resource, containerName, tail, follow, untilTime, filter);
+        const entries = requests.loadEventSource(`/applications/${applicationName}/logs?${search.toString()}`).pipe(map(data => JSON.parse(data).result as models.LogEntry));
         let first = true;
         return new Observable(observer => {
             const subscription = entries.subscribe(
@@ -291,7 +284,7 @@ export class ApplicationsService {
             .then(res => JSON.parse(res.manifest) as models.State);
     }
 
-    public deleteResource(applicationName: string, resource: models.ResourceNode, force: boolean): Promise<any> {
+    public deleteResource(applicationName: string, resource: models.ResourceNode, force: boolean, orphan: boolean): Promise<any> {
         return requests
             .delete(`/applications/${applicationName}/resource`)
             .query({
@@ -301,7 +294,8 @@ export class ApplicationsService {
                 version: resource.version,
                 kind: resource.kind,
                 group: resource.group,
-                force
+                force,
+                orphan
             })
             .send()
             .then(() => true);
@@ -338,6 +332,44 @@ export class ApplicationsService {
             .delete(`/applications/${applicationName}/operation`)
             .send()
             .then(() => true);
+    }
+
+    private getLogsQuery(
+        namespace: string,
+        podName: string,
+        resource: {group: string; kind: string; name: string},
+        containerName: string,
+        tail?: number,
+        follow?: boolean,
+        untilTime?: string,
+        filter?: string
+    ): URLSearchParams {
+        if (follow === undefined || follow === null) {
+            follow = true;
+        }
+        const search = new URLSearchParams();
+        search.set('container', containerName);
+        search.set('namespace', namespace);
+        if (follow) {
+            search.set('follow', follow.toString());
+        }
+        if (podName) {
+            search.set('podName', podName);
+        } else {
+            search.set('group', resource.group);
+            search.set('kind', resource.kind);
+            search.set('resourceName', resource.name);
+        }
+        if (tail) {
+            search.set('tailLines', tail.toString());
+        }
+        if (untilTime) {
+            search.set('untilTime', untilTime);
+        }
+        if (filter) {
+            search.set('filter', filter);
+        }
+        return search;
     }
 
     private parseAppFields(data: any): models.Application {

@@ -51,7 +51,7 @@ spec:
               hosts:
                 - mydomain.example.com
 
-      # Optional Helm version to template with. If omitted it will fallback to look at the 'apiVersion' in Chart.yaml
+      # Optional Helm version to template with. If omitted it will fall back to look at the 'apiVersion' in Chart.yaml
       # and decide which Helm binary to use automatically. This field can be either 'v2' or 'v3'.
       version: v2
 
@@ -105,6 +105,8 @@ spec:
     syncOptions:     # Sync options which modifies sync behavior
     - Validate=false # disables resource validation (equivalent to 'kubectl apply --validate=false') ( true by default ).
     - CreateNamespace=true # Namespace Auto-Creation ensures that namespace specified as the application destination exists in the destination cluster.
+    - PrunePropagationPolicy=foreground # Supported policies are background, foreground and orphan.
+    - PruneLast=true # Allow the ability for resource pruning to happen as a final, implicit wave of a sync operation
     # The retry feature is available since v1.7
     retry:
       limit: 5 # number of failed sync attempt retries; unlimited number of attempts if less than 0

@@ -1,32 +1,26 @@
-import {Checkbox as ArgoCheckbox, DropDownMenu, NotificationType, SlidingPanel, Tab, Tabs, TopBarFilter} from 'argo-ui';
+import {Checkbox as ArgoCheckbox, DropDownMenu, NotificationType, SlidingPanel, TopBarFilter} from 'argo-ui';
 import * as classNames from 'classnames';
 import * as PropTypes from 'prop-types';
 import * as React from 'react';
 import {RouteComponentProps} from 'react-router';
-import {BehaviorSubject, Observable} from 'rxjs';
+import {BehaviorSubject, combineLatest, from, merge, Observable} from 'rxjs';
+import {delay, filter, map, mergeMap, repeat, retryWhen} from 'rxjs/operators';
 
-import {DataLoader, EmptyState, ErrorNotification, EventsList, ObservableQuery, Page, Paginate, Revision, Timestamp, YamlEditor} from '../../../shared/components';
-import {AppContext} from '../../../shared/context';
+import {DataLoader, EmptyState, ErrorNotification, ObservableQuery, Page, Paginate, Revision, Timestamp} from '../../../shared/components';
+import {AppContext, ContextApis} from '../../../shared/context';
 import * as appModels from '../../../shared/models';
 import {AppDetailsPreferences, AppsDetailsViewType, services} from '../../../shared/services';
 
 import {ApplicationConditions} from '../application-conditions/application-conditions';
 import {ApplicationDeploymentHistory} from '../application-deployment-history/application-deployment-history';
-import {ApplicationNodeInfo} from '../application-node-info/application-node-info';
 import {ApplicationOperationState} from '../application-operation-state/application-operation-state';
-import {ApplicationParameters} from '../application-parameters/application-parameters';
 import {PodView} from '../application-pod-view/pod-view';
-import {ApplicationResourceEvents} from '../application-resource-events/application-resource-events';
 import {ApplicationResourceTree, ResourceTreeNode} from '../application-resource-tree/application-resource-tree';
-import {ApplicationResourcesDiff} from '../application-resources-diff/application-resources-diff';
 import {ApplicationStatusPanel} from '../application-status-panel/application-status-panel';
-import {ApplicationSummary} from '../application-summary/application-summary';
 import {ApplicationSyncPanel} from '../application-sync-panel/application-sync-panel';
-import {PodsLogsViewer} from '../pod-logs-viewer/pod-logs-viewer';
+import {ResourceDetails} from '../resource-details/resource-details';
 import * as AppUtils from '../utils';
 import {ApplicationResourceList} from './application-resource-list';
-
-const jsonMergePatch = require('json-merge-patch');
 
 require('./application-details.scss');
 
@@ -34,6 +28,21 @@ interface ApplicationDetailsState {
     page: number;
     revision?: string;
 }
+
+export const NodeInfo = (node?: string): {key: string; container: number} => {
+    const nodeContainer = {key: '', container: 0};
+    if (node) {
+        const parts = node.split('/');
+        nodeContainer.key = parts.slice(0, 4).join('/');
+        nodeContainer.container = parseInt(parts[4] || '0', 10);
+    }
+    return nodeContainer;
+};
+
+export const SelectNode = (fullName: string, containerIndex = 0, tab: string = null, appContext: ContextApis) => {
+    const node = fullName ? `${fullName}/${containerIndex}` : null;
+    appContext.navigation.goto('.', {node, tab});
+};
 
 export class ApplicationDetails extends React.Component<RouteComponentProps<{name: string}>, ApplicationDetailsState> {
     public static contextTypes = {
@@ -59,23 +68,8 @@ export class ApplicationDetails extends React.Component<RouteComponentProps<{nam
         return parseInt(new URLSearchParams(this.props.history.location.search).get('rollback'), 10);
     }
 
-    private get page(): number {
-        return parseInt(new URLSearchParams(this.props.history.location.search).get('page'), 10) || 0;
-    }
-
-    private get untilTimes(): string[] {
-        return (new URLSearchParams(this.props.history.location.search).get('untilTimes') || '').split(',') || [];
-    }
-
     private get selectedNodeInfo() {
-        const nodeContainer = {key: '', container: 0};
-        const node = new URLSearchParams(this.props.location.search).get('node');
-        if (node) {
-            const parts = node.split('/');
-            nodeContainer.key = parts.slice(0, 4).join('/');
-            nodeContainer.container = parseInt(parts[4] || '0', 10);
-        }
-        return nodeContainer;
+        return NodeInfo(new URLSearchParams(this.props.history.location.search).get('node'));
     }
 
     private get selectedNodeKey() {
@@ -92,23 +86,25 @@ export class ApplicationDetails extends React.Component<RouteComponentProps<{nam
                         loadingRenderer={() => <Page title='Application Details'>Loading...</Page>}
                         input={this.props.match.params.name}
                         load={name =>
-                            Observable.combineLatest(this.loadAppInfo(name), services.viewPreferences.getPreferences(), q).map(items => {
-                                const pref = items[1].appDetails;
-                                const params = items[2];
-                                if (params.get('resource') != null) {
-                                    pref.resourceFilter = params
-                                        .get('resource')
-                                        .split(',')
-                                        .filter(item => !!item);
-                                }
-                                if (params.get('view') != null) {
-                                    pref.view = params.get('view') as AppsDetailsViewType;
-                                }
-                                if (params.get('orphaned') != null) {
-                                    pref.orphanedResources = params.get('orphaned') === 'true';
-                                }
-                                return {...items[0], pref};
-                            })
+                            combineLatest([this.loadAppInfo(name), services.viewPreferences.getPreferences(), q]).pipe(
+                                map(items => {
+                                    const pref = items[1].appDetails;
+                                    const params = items[2];
+                                    if (params.get('resource') != null) {
+                                        pref.resourceFilter = params
+                                            .get('resource')
+                                            .split(',')
+                                            .filter(item => !!item);
+                                    }
+                                    if (params.get('view') != null) {
+                                        pref.view = params.get('view') as AppsDetailsViewType;
+                                    }
+                                    if (params.get('orphaned') != null) {
+                                        pref.orphanedResources = params.get('orphaned') === 'true';
+                                    }
+                                    return {...items[0], pref};
+                                })
+                            )
                         }>
                         {({application, tree, pref}: {application: appModels.Application; tree: appModels.ApplicationTree; pref: AppDetailsPreferences}) => {
                             tree.nodes = tree.nodes || [];
@@ -121,7 +117,7 @@ export class ApplicationDetails extends React.Component<RouteComponentProps<{nam
                             const noKindsFilter = pref.resourceFilter.filter(item => item.indexOf('kind:') !== 0);
                             const refreshing = application.metadata.annotations && application.metadata.annotations[appModels.AnnotationRefreshKey];
 
-                            const filter: TopBarFilter<string> = {
+                            const filterTopBar: TopBarFilter<string> = {
                                 items: [
                                     {content: () => <span>Sync</span>},
                                     {value: 'sync:Synced', label: 'Synced'},
@@ -158,17 +154,28 @@ export class ApplicationDetails extends React.Component<RouteComponentProps<{nam
                             const conditions = application.status.conditions || [];
                             const syncResourceKey = new URLSearchParams(this.props.history.location.search).get('deploy');
                             const tab = new URLSearchParams(this.props.history.location.search).get('tab');
-                            const filteredRes = application.status.resources.filter(res => {
-                                const resNode: ResourceTreeNode = {...res, root: null, info: null, parentRefs: [], resourceVersion: '', uid: ''};
-                                resNode.root = resNode;
-                                return this.filterTreeNode(resNode, treeFilter);
-                            });
+
+                            const statusByKey = new Map<string, appModels.ResourceStatus>();
+                            const visibleOrphans = (pref.orphanedResources && tree.orphanedNodes) || [];
+                            if (visibleOrphans.length > 0) {
+                                application.status.resources.forEach(res => statusByKey.set(AppUtils.nodeKey(res), res));
+                            }
+                            const orphans = visibleOrphans.map(orphan => statusByKey.get(AppUtils.nodeKey(orphan)));
+
+                            const filteredRes = application.status.resources
+                                .filter(res => {
+                                    const resNode: ResourceTreeNode = {...res, root: null, info: null, parentRefs: [], resourceVersion: '', uid: ''};
+                                    resNode.root = resNode;
+                                    return this.filterTreeNode(resNode, treeFilter);
+                                })
+                                .concat(orphans);
+
                             return (
                                 <div className='application-details'>
                                     <Page
                                         title='Application Details'
                                         toolbar={{
-                                            filter,
+                                            filter: filterTopBar,
                                             breadcrumbs: [{title: 'Applications', path: '/applications'}, {title: this.props.match.params.name}],
                                             actionMenu: {items: this.getApplicationActionMenu(application)},
                                             tools: (
@@ -299,150 +306,14 @@ export class ApplicationDetails extends React.Component<RouteComponentProps<{nam
                                                 )}
                                         </div>
                                         <SlidingPanel isShown={selectedNode != null || isAppSelected} onClose={() => this.selectNode('')}>
-                                            <div>
-                                                {selectedNode && (
-                                                    <DataLoader
-                                                        noLoaderOnInputChange={true}
-                                                        input={selectedNode.resourceVersion}
-                                                        load={async () => {
-                                                            const managedResources = await services.applications.managedResources(application.metadata.name, {
-                                                                id: {
-                                                                    name: selectedNode.name,
-                                                                    namespace: selectedNode.namespace,
-                                                                    kind: selectedNode.kind,
-                                                                    group: selectedNode.group
-                                                                }
-                                                            });
-                                                            const controlled = managedResources.find(item => AppUtils.isSameNode(selectedNode, item));
-                                                            const summary = application.status.resources.find(item => AppUtils.isSameNode(selectedNode, item));
-                                                            const controlledState = (controlled && summary && {summary, state: controlled}) || null;
-                                                            const resQuery = {...selectedNode};
-                                                            if (controlled && controlled.targetState) {
-                                                                resQuery.version = AppUtils.parseApiVersion(controlled.targetState.apiVersion).version;
-                                                            }
-                                                            const liveState = await services.applications.getResource(application.metadata.name, resQuery).catch(() => null);
-                                                            const events =
-                                                                (liveState &&
-                                                                    (await services.applications.resourceEvents(application.metadata.name, {
-                                                                        name: liveState.metadata.name,
-                                                                        namespace: liveState.metadata.namespace,
-                                                                        uid: liveState.metadata.uid
-                                                                    }))) ||
-                                                                [];
-                                                            let podState: appModels.State;
-                                                            if (selectedNode.kind === 'Pod') {
-                                                                podState = liveState;
-                                                            } else {
-                                                                const childPod = AppUtils.findChildPod(selectedNode, tree);
-                                                                if (childPod) {
-                                                                    podState = await services.applications.getResource(application.metadata.name, childPod).catch(() => null);
-                                                                }
-                                                            }
-
-                                                            return {controlledState, liveState, events, podState};
-                                                        }}>
-                                                        {data => (
-                                                            <Tabs
-                                                                navTransparent={true}
-                                                                tabs={this.getResourceTabs(application, selectedNode, data.liveState, data.podState, data.events, [
-                                                                    {
-                                                                        title: 'SUMMARY',
-                                                                        key: 'summary',
-                                                                        content: (
-                                                                            <ApplicationNodeInfo
-                                                                                application={application}
-                                                                                live={data.liveState}
-                                                                                controlled={data.controlledState}
-                                                                                node={selectedNode}
-                                                                            />
-                                                                        )
-                                                                    }
-                                                                ])}
-                                                                selectedTabKey={tab}
-                                                                onTabSelected={selected => this.appContext.apis.navigation.goto('.', {tab: selected})}
-                                                            />
-                                                        )}
-                                                    </DataLoader>
-                                                )}
-                                                {isAppSelected && (
-                                                    <Tabs
-                                                        navTransparent={true}
-                                                        tabs={[
-                                                            {
-                                                                title: 'SUMMARY',
-                                                                key: 'summary',
-                                                                content: <ApplicationSummary app={application} updateApp={app => this.updateApp(app)} />
-                                                            },
-                                                            {
-                                                                title: 'PARAMETERS',
-                                                                key: 'parameters',
-                                                                content: (
-                                                                    <DataLoader
-                                                                        key='appDetails'
-                                                                        input={application.spec.source}
-                                                                        load={src =>
-                                                                            services.repos.appDetails(src).catch(() => ({
-                                                                                type: 'Directory' as appModels.AppSourceType,
-                                                                                path: application.spec.source.path
-                                                                            }))
-                                                                        }>
-                                                                        {(details: appModels.RepoAppDetails) => (
-                                                                            <ApplicationParameters save={app => this.updateApp(app)} application={application} details={details} />
-                                                                        )}
-                                                                    </DataLoader>
-                                                                )
-                                                            },
-                                                            {
-                                                                title: 'MANIFEST',
-                                                                key: 'manifest',
-                                                                content: (
-                                                                    <YamlEditor
-                                                                        minHeight={800}
-                                                                        input={application.spec}
-                                                                        onSave={async patch => {
-                                                                            const spec = JSON.parse(JSON.stringify(application.spec));
-                                                                            return services.applications.updateSpec(
-                                                                                application.metadata.name,
-                                                                                jsonMergePatch.apply(spec, JSON.parse(patch))
-                                                                            );
-                                                                        }}
-                                                                    />
-                                                                )
-                                                            },
-                                                            {
-                                                                icon: 'fa fa-file-medical',
-                                                                title: 'DIFF',
-                                                                key: 'diff',
-                                                                content: (
-                                                                    <DataLoader
-                                                                        key='diff'
-                                                                        load={async () =>
-                                                                            await services.applications.managedResources(application.metadata.name, {
-                                                                                fields: [
-                                                                                    'items.normalizedLiveState',
-                                                                                    'items.predictedLiveState',
-                                                                                    'items.group',
-                                                                                    'items.kind',
-                                                                                    'items.namespace',
-                                                                                    'items.name'
-                                                                                ]
-                                                                            })
-                                                                        }>
-                                                                        {managedResources => <ApplicationResourcesDiff states={managedResources} />}
-                                                                    </DataLoader>
-                                                                )
-                                                            },
-                                                            {
-                                                                title: 'EVENTS',
-                                                                key: 'event',
-                                                                content: <ApplicationResourceEvents applicationName={application.metadata.name} />
-                                                            }
-                                                        ]}
-                                                        selectedTabKey={tab}
-                                                        onTabSelected={selected => this.appContext.apis.navigation.goto('.', {tab: selected})}
-                                                    />
-                                                )}
-                                            </div>
+                                            <ResourceDetails
+                                                tree={tree}
+                                                application={application}
+                                                isAppSelected={isAppSelected}
+                                                updateApp={app => this.updateApp(app)}
+                                                selectedNode={selectedNode}
+                                                tab={tab}
+                                            />
                                         </SlidingPanel>
                                         <ApplicationSyncPanel
                                             application={application}
@@ -588,55 +459,59 @@ export class ApplicationDetails extends React.Component<RouteComponentProps<{nam
         ];
     }
 
-    private filterTreeNode(node: ResourceTreeNode, filter: {kind: string[]; health: string[]; sync: string[]}): boolean {
-        const syncStatuses = filter.sync.map(item => (item === 'OutOfSync' ? ['OutOfSync', 'Unknown'] : [item])).reduce((first, second) => first.concat(second), []);
+    private filterTreeNode(node: ResourceTreeNode, filterInput: {kind: string[]; health: string[]; sync: string[]}): boolean {
+        const syncStatuses = filterInput.sync.map(item => (item === 'OutOfSync' ? ['OutOfSync', 'Unknown'] : [item])).reduce((first, second) => first.concat(second), []);
 
         return (
-            (filter.kind.length === 0 || filter.kind.indexOf(node.kind) > -1) &&
+            (filterInput.kind.length === 0 || filterInput.kind.indexOf(node.kind) > -1) &&
             (syncStatuses.length === 0 || node.root.hook || (node.root.status && syncStatuses.indexOf(node.root.status) > -1)) &&
-            (filter.health.length === 0 || node.root.hook || (node.root.health && filter.health.indexOf(node.root.health.status) > -1))
+            (filterInput.health.length === 0 || node.root.hook || (node.root.health && filterInput.health.indexOf(node.root.health.status) > -1))
         );
     }
 
     private loadAppInfo(name: string): Observable<{application: appModels.Application; tree: appModels.ApplicationTree}> {
-        return Observable.fromPromise(services.applications.get(name))
-            .flatMap(app => {
-                const fallbackTree = {
-                    nodes: app.status.resources.map(res => ({...res, parentRefs: [], info: [], resourceVersion: '', uid: ''})),
-                    orphanedNodes: [],
-                    hosts: []
-                } as appModels.ApplicationTree;
-                return Observable.combineLatest(
-                    Observable.merge(
-                        Observable.from([app]),
-                        this.appChanged.filter(item => !!item),
-                        AppUtils.handlePageVisibility(() =>
-                            services.applications
-                                .watch({name})
-                                .map(watchEvent => {
-                                    if (watchEvent.type === 'DELETED') {
-                                        this.onAppDeleted();
-                                    }
-                                    return watchEvent.application;
-                                })
-                                .repeat()
-                                .retryWhen(errors => errors.delay(500))
+        return from(services.applications.get(name))
+            .pipe(
+                mergeMap(app => {
+                    const fallbackTree = {
+                        nodes: app.status.resources.map(res => ({...res, parentRefs: [], info: [], resourceVersion: '', uid: ''})),
+                        orphanedNodes: [],
+                        hosts: []
+                    } as appModels.ApplicationTree;
+                    return combineLatest(
+                        merge(
+                            from([app]),
+                            this.appChanged.pipe(filter(item => !!item)),
+                            AppUtils.handlePageVisibility(() =>
+                                services.applications
+                                    .watch({name})
+                                    .pipe(
+                                        map(watchEvent => {
+                                            if (watchEvent.type === 'DELETED') {
+                                                this.onAppDeleted();
+                                            }
+                                            return watchEvent.application;
+                                        })
+                                    )
+                                    .pipe(repeat())
+                                    .pipe(retryWhen(errors => errors.pipe(delay(500))))
+                            )
+                        ),
+                        merge(
+                            from([fallbackTree]),
+                            services.applications.resourceTree(name).catch(() => fallbackTree),
+                            AppUtils.handlePageVisibility(() =>
+                                services.applications
+                                    .watchResourceTree(name)
+                                    .pipe(repeat())
+                                    .pipe(retryWhen(errors => errors.pipe(delay(500))))
+                            )
                         )
-                    ),
-                    Observable.merge(
-                        Observable.from([fallbackTree]),
-                        services.applications.resourceTree(name).catch(() => fallbackTree),
-                        AppUtils.handlePageVisibility(() =>
-                            services.applications
-                                .watchResourceTree(name)
-                                .repeat()
-                                .retryWhen(errors => errors.delay(500))
-                        )
-                    )
-                );
-            })
-            .filter(([application, tree]) => !!application && !!tree)
-            .map(([application, tree]) => ({application, tree}));
+                    );
+                })
+            )
+            .pipe(filter(([application, tree]) => !!application && !!tree))
+            .pipe(map(([application, tree]) => ({application, tree})));
     }
 
     private onAppDeleted() {
@@ -660,11 +535,11 @@ export class ApplicationDetails extends React.Component<RouteComponentProps<{nam
         return nodeByKey;
     }
 
-    private getTreeFilter(filter: string[]): {kind: string[]; health: string[]; sync: string[]} {
+    private getTreeFilter(filterInput: string[]): {kind: string[]; health: string[]; sync: string[]} {
         const kind = new Array<string>();
         const health = new Array<string>();
         const sync = new Array<string>();
-        for (const item of filter) {
+        for (const item of filterInput) {
             const [type, val] = item.split(':');
             switch (type) {
                 case 'kind':
@@ -694,8 +569,7 @@ export class ApplicationDetails extends React.Component<RouteComponentProps<{nam
     }
 
     private selectNode(fullName: string, containerIndex = 0, tab: string = null) {
-        const node = fullName ? `${fullName}/${containerIndex}` : null;
-        this.appContext.apis.navigation.goto('.', {node, tab});
+        SelectNode(fullName, containerIndex, tab, this.appContext.apis);
     }
 
     private async rollbackApplication(revisionHistory: appModels.RevisionHistory, application: appModels.Application) {
@@ -732,84 +606,5 @@ Are you sure you want to disable auto-sync and rollback application '${this.prop
 
     private async deleteApplication() {
         await AppUtils.deleteApplication(this.props.match.params.name, this.appContext.apis);
-    }
-
-    private getResourceTabs(
-        application: appModels.Application,
-        node: appModels.ResourceNode,
-        state: appModels.State,
-        podState: appModels.State,
-        events: appModels.Event[],
-        tabs: Tab[]
-    ) {
-        if (state) {
-            const numErrors = events.filter(event => event.type !== 'Normal').reduce((total, event) => total + event.count, 0);
-            tabs.push({
-                title: 'EVENTS',
-                badge: (numErrors > 0 && numErrors) || null,
-                key: 'events',
-                content: (
-                    <div className='application-resource-events'>
-                        <EventsList events={events} />
-                    </div>
-                )
-            });
-        }
-        if (podState) {
-            const containerGroups = [
-                {
-                    offset: 0,
-                    title: 'CONTAINERS',
-                    containers: podState.spec.containers || []
-                },
-                {
-                    offset: (podState.spec.containers || []).length,
-                    title: 'INIT CONTAINERS',
-                    containers: podState.spec.initContainers || []
-                }
-            ];
-            tabs = tabs.concat([
-                {
-                    key: 'logs',
-                    title: 'LOGS',
-                    content: (
-                        <div className='application-details__tab-content-full-height'>
-                            <div className='row'>
-                                <div className='columns small-3 medium-2'>
-                                    {containerGroups.map(group => (
-                                        <div key={group.title} style={{marginBottom: '1em'}}>
-                                            {group.containers.length > 0 && <p>{group.title}</p>}
-                                            {group.containers.map((container: any, i: number) => (
-                                                <div
-                                                    className='application-details__container'
-                                                    key={container.name}
-                                                    onClick={() => this.selectNode(this.selectedNodeKey, group.offset + i, 'logs')}>
-                                                    {group.offset + i === this.selectedNodeInfo.container && <i className='fa fa-angle-right' />}
-                                                    <span title={container.name}>{container.name}</span>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    ))}
-                                </div>
-                                <div className='columns small-9 medium-10'>
-                                    <PodsLogsViewer
-                                        podName={(state.kind === 'Pod' && state.metadata.name) || ''}
-                                        group={node.group}
-                                        kind={node.kind}
-                                        name={node.name}
-                                        namespace={podState.metadata.namespace}
-                                        applicationName={application.metadata.name}
-                                        containerName={AppUtils.getContainerName(podState, this.selectedNodeInfo.container)}
-                                        page={{number: this.page, untilTimes: this.untilTimes}}
-                                        setPage={pageData => this.appContext.apis.navigation.goto('.', {page: pageData.number, untilTimes: pageData.untilTimes.join(',')})}
-                                    />
-                                </div>
-                            </div>
-                        </div>
-                    )
-                }
-            ]);
-        }
-        return tabs;
     }
 }

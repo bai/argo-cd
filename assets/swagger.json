@@ -259,6 +259,12 @@
             "description": "the selector to to restrict returned list to applications only with matched labels.",
             "name": "selector",
             "in": "query"
+          },
+          {
+            "type": "string",
+            "description": "the repoURL to restrict returned list applications.",
+            "name": "repo",
+            "in": "query"
           }
         ],
         "responses": {
@@ -517,6 +523,12 @@
             "description": "the selector to to restrict returned list to applications only with matched labels.",
             "name": "selector",
             "in": "query"
+          },
+          {
+            "type": "string",
+            "description": "the repoURL to restrict returned list applications.",
+            "name": "repo",
+            "in": "query"
           }
         ],
         "responses": {
@@ -550,6 +562,11 @@
           {
             "type": "boolean",
             "name": "cascade",
+            "in": "query"
+          },
+          {
+            "type": "string",
+            "name": "propagationPolicy",
             "in": "query"
           }
         ],
@@ -1105,6 +1122,11 @@
           {
             "type": "boolean",
             "name": "force",
+            "in": "query"
+          },
+          {
+            "type": "boolean",
+            "name": "orphan",
             "in": "query"
           }
         ],
@@ -2626,7 +2648,7 @@
         "tags": [
           "RepositoryService"
         ],
-        "summary": "ListApps returns list of apps in the repe",
+        "summary": "ListApps returns list of apps in the repo",
         "operationId": "RepositoryService_ListApps",
         "parameters": [
           {
@@ -2835,6 +2857,12 @@
             "description": "Github App Enterprise base url if empty will default to https://api.github.com.",
             "name": "githubAppEnterpriseBaseUrl",
             "in": "query"
+          },
+          {
+            "type": "string",
+            "description": "HTTP/HTTPS proxy to access the repository.",
+            "name": "proxy",
+            "in": "query"
           }
         ],
         "responses": {
@@ -3033,6 +3061,12 @@
             "type": "string",
             "description": "the selector to to restrict returned list to applications only with matched labels.",
             "name": "selector",
+            "in": "query"
+          },
+          {
+            "type": "string",
+            "description": "the repoURL to restrict returned list applications.",
+            "name": "repo",
             "in": "query"
           }
         ],
@@ -3920,6 +3954,9 @@
       "type": "object",
       "title": "RepoAppDetailsQuery contains query information for app details request",
       "properties": {
+        "appName": {
+          "type": "string"
+        },
         "source": {
           "$ref": "#/definitions/v1alpha1ApplicationSource"
         }
@@ -4856,6 +4893,14 @@
             "type": "string"
           }
         },
+        "forceCommonAnnotations": {
+          "type": "boolean",
+          "title": "ForceCommonAnnotations specifies whether to force applying common annotations to resources for Kustomize apps"
+        },
+        "forceCommonLabels": {
+          "type": "boolean",
+          "title": "ForceCommonLabels specifies whether to force applying common labels to resources for Kustomize apps"
+        },
         "images": {
           "type": "array",
           "title": "Images is a list of Kustomize image override specifications",
@@ -5148,6 +5193,13 @@
       "type": "object",
       "title": "ClusterInfo contains information about the cluster",
       "properties": {
+        "apiVersions": {
+          "type": "array",
+          "title": "APIVersions contains list of API versions supported by the cluster",
+          "items": {
+            "type": "string"
+          }
+        },
         "applicationsCount": {
           "type": "string",
           "format": "int64",
@@ -5622,6 +5674,12 @@
           "items": {
             "type": "string"
           }
+        },
+        "jqPathExpressions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
@@ -5653,7 +5711,7 @@
         },
         "policies": {
           "type": "array",
-          "title": "Policies Stores a list of casbin formated strings that define access policies for the role in the project",
+          "title": "Policies Stores a list of casbin formatted strings that define access policies for the role in the project",
           "items": {
             "type": "string"
           }
@@ -5664,6 +5722,10 @@
       "type": "object",
       "title": "RepoCreds holds the definition for repository credentials",
       "properties": {
+        "enableOCI": {
+          "type": "boolean",
+          "title": "EnableOCI specifies whether helm-oci support should be enabled for this repo"
+        },
         "githubAppEnterpriseBaseUrl": {
           "type": "string",
           "title": "GithubAppEnterpriseBaseURL specifies the GitHub API URL for GitHub app authentication. If empty will default to https://api.github.com"
@@ -5697,6 +5759,10 @@
         "tlsClientCertKey": {
           "type": "string",
           "title": "TLSClientCertKey specifies the TLS client cert key for authenticating at the repo server"
+        },
+        "type": {
+          "description": "Type specifies the type of the repoCreds. Can be either \"git\" or \"helm. \"git\" is assumed if empty or absent.",
+          "type": "string"
         },
         "url": {
           "type": "string",
@@ -5775,6 +5841,10 @@
         "password": {
           "type": "string",
           "title": "Password contains the password or PAT used for authenticating at the remote repository"
+        },
+        "proxy": {
+          "type": "string",
+          "title": "Proxy specifies the HTTP/HTTPS proxy used to access the repo"
         },
         "repo": {
           "type": "string",
@@ -5950,6 +6020,12 @@
         "group": {
           "type": "string"
         },
+        "jqPathExpressions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "jsonPointers": {
           "type": "array",
           "items": {
@@ -6061,6 +6137,9 @@
           "items": {
             "$ref": "#/definitions/v1alpha1KnownTypeField"
           }
+        },
+        "useOpenLibs": {
+          "type": "boolean"
         }
       }
     },

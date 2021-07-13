@@ -12,18 +12,17 @@ import (
 	"google.golang.org/grpc/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/argoproj/argo-cd/common"
-	repositorypkg "github.com/argoproj/argo-cd/pkg/apiclient/repository"
-	appsv1 "github.com/argoproj/argo-cd/pkg/apis/application/v1alpha1"
-	"github.com/argoproj/argo-cd/reposerver/apiclient"
-	servercache "github.com/argoproj/argo-cd/server/cache"
-	"github.com/argoproj/argo-cd/server/rbacpolicy"
-	"github.com/argoproj/argo-cd/util/argo"
-	"github.com/argoproj/argo-cd/util/db"
-	"github.com/argoproj/argo-cd/util/errors"
-	"github.com/argoproj/argo-cd/util/io"
-	"github.com/argoproj/argo-cd/util/rbac"
-	"github.com/argoproj/argo-cd/util/settings"
+	"github.com/argoproj/argo-cd/v2/common"
+	repositorypkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/repository"
+	appsv1 "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v2/reposerver/apiclient"
+	servercache "github.com/argoproj/argo-cd/v2/server/cache"
+	"github.com/argoproj/argo-cd/v2/server/rbacpolicy"
+	"github.com/argoproj/argo-cd/v2/util/db"
+	"github.com/argoproj/argo-cd/v2/util/errors"
+	"github.com/argoproj/argo-cd/v2/util/io"
+	"github.com/argoproj/argo-cd/v2/util/rbac"
+	"github.com/argoproj/argo-cd/v2/util/settings"
 )
 
 // Server provides a Repository service
@@ -69,7 +68,7 @@ func (s *Server) getConnectionState(ctx context.Context, url string, forceRefres
 	var err error
 	repo, err := s.db.GetRepository(ctx, url)
 	if err == nil {
-		err = argo.TestRepo(repo)
+		err = s.testRepo(ctx, repo)
 	}
 	if err != nil {
 		connectionState.Status = appsv1.ConnectionStatusFailed
@@ -119,6 +118,7 @@ func (s *Server) Get(ctx context.Context, q *repositorypkg.RepoQuery) (*appsv1.R
 		GithubAppId:                repo.GithubAppId,
 		GithubAppInstallationId:    repo.GithubAppInstallationId,
 		GitHubAppEnterpriseBaseURL: repo.GitHubAppEnterpriseBaseURL,
+		Proxy:                      repo.Proxy,
 	}
 
 	item.ConnectionState = s.getConnectionState(ctx, item.Repo, q.ForceRefresh)
@@ -149,6 +149,7 @@ func (s *Server) ListRepositories(ctx context.Context, q *repositorypkg.RepoQuer
 				Insecure:  repo.IsInsecure(),
 				EnableLFS: repo.EnableLFS,
 				EnableOCI: repo.EnableOCI,
+				Proxy:     repo.Proxy,
 			})
 		}
 	}
@@ -246,6 +247,7 @@ func (s *Server) GetAppDetails(ctx context.Context, q *repositorypkg.RepoAppDeta
 		Source:           q.Source,
 		Repos:            helmRepos,
 		KustomizeOptions: kustomizeOptions,
+		AppName:          q.AppName,
 	})
 }
 
@@ -294,7 +296,8 @@ func (s *Server) CreateRepository(ctx context.Context, q *repositorypkg.RepoCrea
 			}
 			repo.CopyCredentialsFrom(creds)
 		}
-		err = argo.TestRepo(repo)
+
+		err = s.testRepo(ctx, repo)
 		if err != nil {
 			return nil, err
 		}
@@ -388,6 +391,7 @@ func (s *Server) ValidateAccess(ctx context.Context, q *repositorypkg.RepoAccess
 		GithubAppId:                q.GithubAppID,
 		GithubAppInstallationId:    q.GithubAppInstallationID,
 		GitHubAppEnterpriseBaseURL: q.GithubAppEnterpriseBaseUrl,
+		Proxy:                      q.Proxy,
 	}
 
 	var repoCreds *appsv1.RepoCreds
@@ -404,9 +408,22 @@ func (s *Server) ValidateAccess(ctx context.Context, q *repositorypkg.RepoAccess
 			repo.CopyCredentialsFrom(repoCreds)
 		}
 	}
-	err = argo.TestRepo(repo)
+	err = s.testRepo(ctx, repo)
 	if err != nil {
 		return nil, err
 	}
 	return &repositorypkg.RepoResponse{}, nil
+}
+
+func (s *Server) testRepo(ctx context.Context, repo *appsv1.Repository) error {
+	conn, repoClient, err := s.repoClientset.NewRepoServerClient()
+	if err != nil {
+		return err
+	}
+	defer io.Close(conn)
+
+	_, err = repoClient.TestRepository(ctx, &apiclient.TestRepositoryRequest{
+		Repo: repo,
+	})
+	return err
 }
